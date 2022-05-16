@@ -3,7 +3,7 @@ import ast
 import datetime
 import json
 import os
-import re
+import random
 from glob import glob
 from typing import List, Tuple
 import numpy as np
@@ -15,14 +15,16 @@ from tqdm import tqdm
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--objs-dir', type=str, default='assets/objects',
+    parser.add_argument('--objs-dir', type=str, required=True,
                         help='Directory containing subdirectories with label names which each contain masked out images of the objects')
-    parser.add_argument('--save-dir', type=str, default='assets/result', help='Directory to save images and annotations to')
+    parser.add_argument('--save-dir', type=str, default=None, help='Directory to save images and annotations to')
     parser.add_argument('--img-size', type=int, nargs=2, default=[256, 256], help='Output image size. Specify height and width seperated by whitespace')
     parser.add_argument('--num-imgs', type=int, default=10, help='Number of unaugmented images to produce')
     parser.add_argument('--bgs-dir', type=str, default=None, help='Directory containing random background images')
-    parser.add_argument('--augs', type=str, nargs='*', default=['RandomHorizontalFlip(p=0.5)', 'RandomVerticalFlip(p=0.5)'],
-                        help='`torchvision.transforms` augmentations to perform on the objects, in given order, seperated by whitespace')
+    parser.add_argument('--augs', type=str, nargs='*', default=None,
+                        help='`torchvision.transforms` augmentations to perform on the objects, in given order, seperated by whitespace. E.g. RandomHorizontalFlip(p=0.5) RandomVerticalFlip(p=0.5)')
+    parser.add_argument('--threshold', type=int, default=0, help='Threshold for maximum alpha value to consider transparent')
+    parser.add_argument('--max-num-objs', type=int, default=5, help='Maximum number of objects in a resulting image')
     args = parser.parse_args()
     
     return args
@@ -53,8 +55,22 @@ def get_backround_images(num_imgs: int, img_size: Tuple[int, int], bgs_dir: str 
     return bg_imgs
 
 
-def place_objects_in_area(obj_sizes: List[Tuple[int, int]], area_size: Tuple[int, int], plot: bool = False) -> Tuple[
-    List[Tuple[int, int, int, int]], List[int]]:
+def crop_image(img: np.ndarray, threshold: int = 0) -> np.ndarray:
+    """
+    Crops out single object in transparent image
+    :param img: Image with 4 dimensions where the last dimension is the alpha channel
+    :param threshold: Threshold for maximum alpha value to consider transparent
+    :return: Cropped image
+    """
+    
+    idxs = np.argwhere(img[:, :, -1] > threshold)
+    y, x = idxs[:, 0], idxs[:, 1]
+    cropped_img = img[np.min(y):np.max(y), np.min(x):np.max(x)]
+    
+    return cropped_img
+
+
+def place_objects_in_area(obj_sizes: List[Tuple[int, int]], area_size: Tuple[int, int], plot: bool = False) -> List[Tuple[int, int, int, int]]:
     """
     Randomly places objects with corresponding bounding boxes in a fixed sized area
     :param obj_sizes: Sizes (height, width) of objects to place in area
@@ -65,10 +81,10 @@ def place_objects_in_area(obj_sizes: List[Tuple[int, int]], area_size: Tuple[int
     area = np.ones(area_size)
     
     # Sort objects regarding to area in descending order
-    obj_sizes = sorted(obj_sizes, key=lambda x: x[0] * x[1], reverse=True)
+    # obj_sizes = sorted(obj_sizes, key=lambda x: x[0] * x[1], reverse=True) TODO this breaks the order of object indices
     
-    bboxes, placed_obj_idxs = [], []
-    for i, obj_size in enumerate(obj_sizes):
+    bboxes = []
+    for obj_size in obj_sizes:
         tmp = area.copy()
         tmp[-obj_size[0]:, :] = 0
         tmp[:, -obj_size[1]:] = 0
@@ -85,7 +101,6 @@ def place_objects_in_area(obj_sizes: List[Tuple[int, int]], area_size: Tuple[int
             x1, y1 = x0 + obj_size[1], y0 + obj_size[0]
             
             bboxes.append((x0, y0, x1, y1))
-            placed_obj_idxs.append(i)
     
     if plot:
         vis = Image.new('RGB', area_size)
@@ -95,7 +110,7 @@ def place_objects_in_area(obj_sizes: List[Tuple[int, int]], area_size: Tuple[int
         
         vis.show()
     
-    return bboxes, placed_obj_idxs
+    return bboxes
 
 
 def augment_image(img: Image, augs: List[str]) -> Image:
@@ -129,7 +144,7 @@ def generate_annotations(imgs: List, bboxess: List[List[Tuple[int, int, int, int
     cats = [{'id': i, 'name': cat, 'supercategory': cat} for i, cat in enumerate(sorted(set([i for s in labelss for i in s])))]
     
     img_anns, obj_anns = [], []
-    for i, (img, bboxes, labels) in enumerate(zip(imgs, bboxess, labelss)):
+    for i, (img, bboxes, labels) in tqdm(enumerate(zip(imgs, bboxess, labelss)), desc='Creating annotations', total=len(imgs)):
         img.save(os.path.join(save_dir, f'generated_{i}.png'))
         img_anns.append(
             {"id": i, "width": img.size[0], "height": img.size[1], "file_name": f'generated_{i}.png', "license": 0, "flickr_url": '', "coco_url": '',
@@ -157,36 +172,53 @@ def main():
     DONE - do augmentations based on torchvision transform
     (- specify radius for spacing of objects (if possible, if they fit in the image))
     - specify if only bounding boxes/segmentations or both should be outputted
+    - Do not specify image size but automatically allocate space for objects
     """
     np.random.seed(1)
     
     args = parse_args()
     
+    if args.save_dir is None:
+        args.save_dir = os.path.join(os.path.dirname(args.objs_dir), f'{os.path.basename(args.objs_dir)}_results')
+    
+    created_dir = False
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)
+        created_dir = True
     
-    bg_imgs = get_backround_images(args.num_imgs, args.img_size, args.bgs_dir)
-    
-    paths = glob(os.path.join(args.objs_dir, '*', '*.png'))
-    obj_imgs = [Image.open(path) for path in paths]
-    labels = [os.path.basename(os.path.dirname(path)) for path in paths]
-    
-    bboxess, labelss = [], []
-    # blend background and foreground images
-    for bg_img in tqdm(bg_imgs, desc='Blending images'):
-        obj_imgs_aug = [augment_image(obj_img, args.augs) for obj_img in obj_imgs] if args.augs is not None else obj_imgs
-        obj_sizes = [obj_img.size[::-1] for obj_img in obj_imgs_aug]  # reverse to have height, width form
+    try:
+        paths = glob(os.path.join(args.objs_dir, '*', '*.png'))
+        paths = np.random.choice(paths, 30, replace=False)  # TODO remove
+        obj_imgs = [Image.open(path) for path in paths]
+        obj_imgs = [Image.fromarray(crop_image(np.array(img), threshold=args.threshold)) for img in tqdm(obj_imgs, desc='Cropping images')]
         
-        bboxes, placed_obj_idxs = place_objects_in_area(obj_sizes, args.img_size)
-        bboxess.append(bboxes)
-        labelss.append([labels[idx] for idx in placed_obj_idxs])
+        labels = [os.path.basename(os.path.dirname(path)) for path in paths]
+
+        data = list(zip(obj_imgs, labels))
         
-        for bbox, idx in zip(bboxes, placed_obj_idxs):
-            bg_img.paste(obj_imgs[idx], (bbox[0], bbox[1]), obj_imgs[idx])
+        bg_imgs = get_backround_images(args.num_imgs, args.img_size, args.bgs_dir)
+        
+        bboxess, labelss = [], []
+        # blend background and foreground images
+        for bg_img in tqdm(bg_imgs, desc='Blending images'):
+            rnd_data = random.sample(data, k=min(len(obj_imgs), np.random.randint(2, args.max_num_objs)))
+            rnd_obj_imgs, rnd_labels = [[d[i] for d in rnd_data] for i in range(len(rnd_data[0]))]
+            rnd_obj_imgs = [augment_image(obj_img, args.augs) for obj_img in rnd_obj_imgs] if args.augs is not None else rnd_obj_imgs
+            
+            # reverse shape to have height, width form
+            bboxes = place_objects_in_area([obj_img.size[::-1] for obj_img in rnd_obj_imgs], args.img_size)
+            bboxess.append(bboxes)
+            labelss.append(rnd_labels)
+            
+            for bbox, rnd_obj_img in zip(bboxes, rnd_obj_imgs):
+                bg_img.paste(rnd_obj_img, (bbox[0], bbox[1]), rnd_obj_img)
+        
+        generate_annotations(bg_imgs, bboxess, labelss, args.save_dir)
     
-    generate_annotations(bg_imgs, bboxess, labelss, args.save_dir)
-    
-    print()
+    except Exception as e:
+        print(e)
+        if created_dir:
+            os.remove(args.save_dir)
 
 
 if __name__ == '__main__':
