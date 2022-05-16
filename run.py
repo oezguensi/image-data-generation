@@ -188,7 +188,7 @@ def main():
     
     try:
         paths = glob(os.path.join(args.objs_dir, '*', '*.png'))
-        paths = np.random.choice(paths, 30, replace=False)  # TODO remove
+
         obj_imgs = [Image.open(path) for path in paths]
         obj_imgs = [Image.fromarray(crop_image(np.array(img), threshold=args.threshold)) for img in tqdm(obj_imgs, desc='Cropping images')]
         
