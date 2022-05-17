@@ -79,7 +79,7 @@ def place_objects_in_area(obj_imgs: List, labels: List, area_size: Tuple[int, in
     :param plot: Whether to plot the positioned objects
     :return: Upper left corner (x, y) of the objects
     """
-
+    
     bboxes, used_obj_imgs, used_labels = [], [], []
     for obj_img, label in zip(obj_imgs, labels):
         tmp = np.ones(area_size)
@@ -206,7 +206,7 @@ def main():
             rnd_obj_imgs = [augment_image(obj_img, args.augs) for obj_img in rnd_obj_imgs] if args.augs is not None else rnd_obj_imgs
             
             # reverse shape to have height, width form
-            bboxes, used_obj_imgs, used_labels = place_objects_in_area(rnd_obj_imgs, labels, args.img_size)
+            bboxes, used_obj_imgs, used_labels = place_objects_in_area(rnd_obj_imgs, rnd_labels, args.img_size)
             bboxess.append(bboxes)
             labelss.append(used_labels)
             
