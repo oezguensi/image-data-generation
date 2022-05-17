@@ -19,7 +19,7 @@ def parse_args():
                         help='Directory containing subdirectories with label names which each contain masked out images of the objects')
     parser.add_argument('--save-dir', type=str, default=None, help='Directory to save images and annotations to')
     parser.add_argument('--img-size', type=int, nargs=2, default=[256, 256], help='Output image size. Specify height and width seperated by whitespace')
-    parser.add_argument('--num-imgs', type=int, default=10, help='Number of unaugmented images to produce')
+    parser.add_argument('--num-imgs', type=int, default=100, help='Number of unaugmented images to produce')
     parser.add_argument('--bgs-dir', type=str, default=None, help='Directory containing random background images')
     parser.add_argument('--augs', type=str, nargs='*', default=None,
                         help='`torchvision.transforms` augmentations to perform on the objects, in given order, seperated by whitespace. E.g. RandomHorizontalFlip(p=0.5) RandomVerticalFlip(p=0.5)')
@@ -70,37 +70,35 @@ def crop_image(img: np.ndarray, threshold: int = 0) -> np.ndarray:
     return cropped_img
 
 
-def place_objects_in_area(obj_sizes: List[Tuple[int, int]], area_size: Tuple[int, int], plot: bool = False) -> List[Tuple[int, int, int, int]]:
+def place_objects_in_area(obj_imgs: List, labels: List, area_size: Tuple[int, int], plot: bool = False) -> Tuple[List[Tuple[int, int, int, int]], List, List]:
     """
     Randomly places objects with corresponding bounding boxes in a fixed sized area
-    :param obj_sizes: Sizes (height, width) of objects to place in area
+    :param obj_imgs: Images of objects to place in area
+    :param labels: Label for each object
     :param area_size: Size (height, width) of the area
     :param plot: Whether to plot the positioned objects
     :return: Upper left corner (x, y) of the objects
     """
-    area = np.ones(area_size)
-    
-    # Sort objects regarding to area in descending order
-    # obj_sizes = sorted(obj_sizes, key=lambda x: x[0] * x[1], reverse=True) TODO this breaks the order of object indices
-    
-    bboxes = []
-    for obj_size in obj_sizes:
-        tmp = area.copy()
-        tmp[-obj_size[0]:, :] = 0
-        tmp[:, -obj_size[1]:] = 0
+
+    bboxes, used_obj_imgs, used_labels = [], [], []
+    for obj_img, label in zip(obj_imgs, labels):
+        tmp = np.ones(area_size)
+        tmp[-obj_img.size[1]:, :] = 0
+        tmp[:, -obj_img.size[0]:] = 0
         
-        if len(bboxes) > 0:
-            for bbox in bboxes:
-                tmp[max(0, bbox[1] - obj_size[0]): bbox[3], max(0, bbox[0] - obj_size[1]): bbox[2]] = 0
+        for bbox in bboxes:
+            tmp[max(0, bbox[1] - obj_img.size[1]): bbox[3], max(0, bbox[0] - obj_img.size[0]): bbox[2]] = 0
         
         # If enough space is available, place object
         free_idxs = tmp.nonzero()
         if free_idxs[0].shape[0] > 0:
             rnd_int = np.random.randint(len(free_idxs[0]) - 1)
             x0, y0 = free_idxs[1][rnd_int], free_idxs[0][rnd_int]
-            x1, y1 = x0 + obj_size[1], y0 + obj_size[0]
+            x1, y1 = x0 + obj_img.size[0], y0 + obj_img.size[1]
             
             bboxes.append((x0, y0, x1, y1))
+            used_obj_imgs.append(obj_img)
+            used_labels.append(label)
     
     if plot:
         vis = Image.new('RGB', area_size)
@@ -110,7 +108,7 @@ def place_objects_in_area(obj_sizes: List[Tuple[int, int]], area_size: Tuple[int
         
         vis.show()
     
-    return bboxes
+    return bboxes, used_obj_imgs, used_labels
 
 
 def augment_image(img: Image, augs: List[str]) -> Image:
@@ -174,7 +172,9 @@ def main():
     - specify if only bounding boxes/segmentations or both should be outputted
     - Do not specify image size but automatically allocate space for objects
     """
+    # Set seeds for reproducibility
     np.random.seed(1)
+    random.seed(1)
     
     args = parse_args()
     
@@ -188,30 +188,32 @@ def main():
     
     try:
         paths = glob(os.path.join(args.objs_dir, '*', '*.png'))
-
+        
         obj_imgs = [Image.open(path) for path in paths]
         obj_imgs = [Image.fromarray(crop_image(np.array(img), threshold=args.threshold)) for img in tqdm(obj_imgs, desc='Cropping images')]
         
         labels = [os.path.basename(os.path.dirname(path)) for path in paths]
-
+        
         data = list(zip(obj_imgs, labels))
         
         bg_imgs = get_backround_images(args.num_imgs, args.img_size, args.bgs_dir)
         
         bboxess, labelss = [], []
         # blend background and foreground images
-        for bg_img in tqdm(bg_imgs, desc='Blending images'):
-            rnd_data = random.sample(data, k=min(len(obj_imgs), np.random.randint(2, args.max_num_objs)))
+        for i, bg_img in tqdm(enumerate(bg_imgs), desc='Blending images', total=len(bg_imgs)):
+            rnd_data = random.sample(data, k=min(len(obj_imgs), np.random.randint(1, args.max_num_objs)))
             rnd_obj_imgs, rnd_labels = [[d[i] for d in rnd_data] for i in range(len(rnd_data[0]))]
             rnd_obj_imgs = [augment_image(obj_img, args.augs) for obj_img in rnd_obj_imgs] if args.augs is not None else rnd_obj_imgs
             
             # reverse shape to have height, width form
-            bboxes = place_objects_in_area([obj_img.size[::-1] for obj_img in rnd_obj_imgs], args.img_size)
+            bboxes, used_obj_imgs, used_labels = place_objects_in_area(rnd_obj_imgs, labels, args.img_size)
             bboxess.append(bboxes)
-            labelss.append(rnd_labels)
+            labelss.append(used_labels)
             
-            for bbox, rnd_obj_img in zip(bboxes, rnd_obj_imgs):
-                bg_img.paste(rnd_obj_img, (bbox[0], bbox[1]), rnd_obj_img)
+            for bbox, used_obj_img in zip(bboxes, used_obj_imgs):
+                bg_img.paste(used_obj_img, (bbox[0], bbox[1]), used_obj_img)
+            
+            print()
         
         generate_annotations(bg_imgs, bboxess, labelss, args.save_dir)
     
