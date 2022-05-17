@@ -130,7 +130,7 @@ def augment_image(img: Image, augs: List[str]) -> Image:
     return img
 
 
-def generate_annotations(imgs: List, bboxess: List[List[Tuple[int, int, int, int]]], labelss: List[str], save_dir: str):
+def generate_annotations(imgs: List, bboxess: List[List[Tuple[int, int, int, int]]], labelss: List[List[str]], save_dir: str):
     """
     Saves images and annotations in COCO format
     :param imgs: List of Pil images
@@ -213,8 +213,6 @@ def main():
             for bbox, used_obj_img in zip(bboxes, used_obj_imgs):
                 bg_img.paste(used_obj_img, (bbox[0], bbox[1]), used_obj_img)
             
-            print()
-        
         generate_annotations(bg_imgs, bboxess, labelss, args.save_dir)
     
     except Exception as e:
