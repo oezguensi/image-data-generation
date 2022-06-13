@@ -163,15 +163,6 @@ def generate_annotations(imgs: List, bboxess: List[List[Tuple[int, int, int, int
 
 
 def main():
-    """
-    DONE - specify image size
-    DONE - use images as background
-    DONE - use random colors if no random background images are given
-    DONE - do augmentations based on torchvision transform
-    (- specify radius for spacing of objects (if possible, if they fit in the image))
-    - specify if only bounding boxes/segmentations or both should be outputted
-    - Do not specify image size but automatically allocate space for objects
-    """
     # Set seeds for reproducibility
     np.random.seed(1)
     random.seed(1)
@@ -201,7 +192,11 @@ def main():
         bboxess, labelss = [], []
         # blend background and foreground images
         for i, bg_img in tqdm(enumerate(bg_imgs), desc='Blending images', total=len(bg_imgs)):
-            rnd_data = random.sample(data, k=min(len(obj_imgs), np.random.randint(1, args.max_num_objs)))
+            if args.max_num_objs == 1:
+                rnd_data = [data[i % len(data)]]
+            else:
+                rnd_data = random.sample(data, k=min(len(obj_imgs), np.random.randint(1, args.max_num_objs)))
+            
             rnd_obj_imgs, rnd_labels = [[d[i] for d in rnd_data] for i in range(len(rnd_data[0]))]
             rnd_obj_imgs = [augment_image(obj_img, args.augs) for obj_img in rnd_obj_imgs] if args.augs is not None else rnd_obj_imgs
             
@@ -212,7 +207,7 @@ def main():
             
             for bbox, used_obj_img in zip(bboxes, used_obj_imgs):
                 bg_img.paste(used_obj_img, (bbox[0], bbox[1]), used_obj_img)
-            
+        
         generate_annotations(bg_imgs, bboxess, labelss, args.save_dir)
     
     except Exception as e:
