@@ -48,7 +48,7 @@ def main():
         
         labelss = [[os.path.basename(os.path.dirname(os.path.dirname(path)))] for path in img_paths]
         
-        generate_annotations(bboxess, labelss, args.save_dir, paths=img_paths, img_sizes=img_sizes)
+        generate_annotations(labelss, args.save_dir, paths=img_paths, img_sizes=img_sizes, bboxess=bboxess)
     
     except Exception as e:
         print(e)

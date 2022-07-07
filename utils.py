@@ -6,6 +6,8 @@ import zipfile
 from glob import glob
 from shutil import copyfile
 from typing import Tuple, List
+
+import cv2
 import numpy as np
 import torchvision
 from PIL import Image, ImageDraw
@@ -51,10 +53,16 @@ def get_bounding_box(img: np.ndarray, threshold: int = 0) -> Tuple[int, int, int
         y, x = idxs[:, 0], idxs[:, 1]
         x0, y0, x1, y1 = [np.min(x), np.min(y), np.max(x), np.max(y)]
     else:
-        rows = np.any(img, axis=1)
-        cols = np.any(img, axis=0)
-        x0, x1 = np.where(rows)[0][[0, -1]]
-        y0, y1 = np.where(cols)[0][[0, -1]]
+        # rows = np.any(img, axis=1)
+        # cols = np.any(img, axis=0)
+        # x0, x1 = np.where(rows)[0][[0, -1]]
+        # y0, y1 = np.where(cols)[0][[0, -1]]
+        
+        contours, hierarchy = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        biggest_contour = contours[np.argmax([cv2.contourArea(contour) for contour in contours])]
+        x0, y0, w, h = cv2.boundingRect(biggest_contour)
+        x1 = x0 + w
+        y1 = y0 + h
     
     return x0, y0, x1, y1
 
@@ -119,8 +127,8 @@ def augment_image(img: Image, augs: List[str]) -> Image:
     return img
 
 
-def generate_annotations(bboxess: List[List[Tuple[int, int, int, int]]], labelss: List[List[str]], save_dir: str, imgs: List = None, paths: List = None,
-                         img_sizes: List[Tuple] = None):
+def generate_annotations(labelss: List[List[str]], save_dir: str, imgs: List = None, paths: List = None,
+                         img_sizes: List[Tuple] = None, bboxess: List[List[Tuple[int, int, int, int]]] = None, segmentationss=None):
     """
     Saves images and annotations in COCO format
     :param bboxess: List of lists containing bounding boxes
@@ -132,37 +140,48 @@ def generate_annotations(bboxess: List[List[Tuple[int, int, int, int]]], labelss
     """
     
     try:
-        if imgs is None:
-            imgs = [None] * len(paths)
-        if paths is None:
-            paths = [None] * len(imgs)
-        if img_sizes is None:
-            img_sizes = [None] * len(imgs)
+        imgs = [None] * len(paths) if imgs is None else imgs
+        paths = [None] * len(imgs) if paths is None else paths
     except Exception as e:
-        print(f'Need to either pass in real images or paths together with image sizes: {e}')
+        print(f'Need to at least pass in real images or paths: {e}')
+    
+    img_sizes = [None] * len(paths if imgs is None else imgs) if img_sizes is None else img_sizes
+    
+    try:
+        bboxess = [None] * len(segmentationss) if bboxess is None else bboxess
+        segmentationss = [None] * len(bboxess) if segmentationss is None else segmentationss
+    except Exception as e:
+        print(f'Need to at least pass in bounding boxes or segmentations for each image: {e}')
     
     cats = [{'id': i, 'name': cat, 'supercategory': cat} for i, cat in enumerate(sorted(set([i for s in labelss for i in s])))]
     
     img_anns, obj_anns = [], []
-    for i, (img, path, bboxes, labels, img_size) in tqdm(enumerate(zip(imgs, paths, bboxess, labelss, img_sizes)), desc='Creating annotations',
-                                                         total=len(imgs)):
-        if img is None:
+    for i, (img, path, bboxes, segmentations, labels, img_size) in tqdm(enumerate(zip(imgs, paths, bboxess, segmentationss, labelss, img_sizes)),
+                                                                        desc='Creating annotations', total=len(imgs)):
+        if path is not None:
             copyfile(path, os.path.join(save_dir, f'generated_{i}.png'))
         else:
             img.save(os.path.join(save_dir, f'generated_{i}.png'))
-        img_anns.append({"id": i, "width": img_size[0] if img is None else img.size[0], "height": img_size[1] if img is None else img.size[1],
-                         "file_name": f'generated_{i}.png', "license": 0, "flickr_url": '', "coco_url": '',
+        
+        size = (Image.open(path).size if img_size is None else img_size) if img is None else img.size
+        
+        img_anns.append({"id": i, "width": size[0], "height": size[1], "file_name": f'generated_{i}.png', "license": 0, "flickr_url": '', "coco_url": '',
                          "date_captured": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')})
         
-        for bbox, label in zip(bboxes, labels):
+        segmentations = [None] * len(bboxes) if segmentations is None else segmentations
+        bboxes = [None] * len(segmentations) if bboxes is None else bboxes
+        
+        for bbox, segmentation, label in zip(bboxes, segmentations, labels):
+            if bbox is None:
+                pass  # TODO get bbox from segmentation
+            
             x0, y0, x1, y1 = bbox
             width, height = x1 - x0, y1 - y0
             area = width * height
             
-            obj_anns.append(
-                {"id": len(obj_anns), "image_id": i, "category_id": [cat['id'] for cat in cats if cat['name'] == label][0], "segmentation": [],
-                 "area": int(area),
-                 "bbox": [int(x0), int(y0), int(width), int(height)], "iscrowd": 0})
+            obj_anns.append({"id": len(obj_anns), "image_id": i, "category_id": [cat['id'] for cat in cats if cat['name'] == label][0],
+                             "segmentation": [] if segmentation is None else segmentation, "area": int(area),
+                             "bbox": [int(x0), int(y0), int(width), int(height)], "iscrowd": 0})
     
     with open(os.path.join(save_dir, 'annotations.json'), 'w') as f:
         json.dump({'images': img_anns, 'annotations': obj_anns, 'categories': cats}, f)
