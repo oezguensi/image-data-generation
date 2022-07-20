@@ -42,7 +42,7 @@ def main():
         if len(mask_paths) == 0 or len(img_paths) == 0:
             raise ValueError('Could not find any images')
         
-        masks = [Image.open(path) for path in mask_paths]
+        masks = [Image.open(path).convert('L') for path in mask_paths]
         img_sizes = [img.size for img in masks]
         bboxess = [[get_bounding_box(np.array(mask))] for mask in tqdm(masks, desc='Getting bounding boxes')]
         
