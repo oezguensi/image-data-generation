@@ -40,7 +40,22 @@ def get_backround_images(num_imgs: int, img_size: Tuple[int, int], bgs_dir: str 
     return bg_imgs
 
 
-def get_bounding_box(img: np.ndarray, threshold: int = 0) -> Tuple[int, int, int, int]:
+def get_segmentations(img: np.ndarray):
+    """
+    The COCO format for contours/polygons/segmentations is structured as follows:
+    [[first object], [second object]] --> [[x1, y1, x2, y2, x3, y3, x4, y4, ...]]
+    """
+    if len(img.shape) > 2:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _, thresh_img = cv2.threshold(img, 127, 255, 0)
+    contours, _ = cv2.findContours(thresh_img, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    
+    segmentations = [cnt.flatten().tolist() for cnt in contours]
+    
+    return segmentations
+
+
+def get_bounding_box(img: np.ndarray, threshold: int = 0, contours=None) -> Tuple[int, int, int, int]:
     """
     Gets the bounding box of a transparent image containing a single non-transparent object
     :param img: Either a transparent image with 4 dimensions where the last dimension is the alpha channel, or a binary mask
@@ -57,8 +72,8 @@ def get_bounding_box(img: np.ndarray, threshold: int = 0) -> Tuple[int, int, int
         # cols = np.any(img, axis=0)
         # x0, x1 = np.where(rows)[0][[0, -1]]
         # y0, y1 = np.where(cols)[0][[0, -1]]
-        
-        contours, hierarchy = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if contours is None:
+            contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         biggest_contour = contours[np.argmax([cv2.contourArea(contour) for contour in contours])]
         x0, y0, w, h = cv2.boundingRect(biggest_contour)
         x1 = x0 + w
@@ -132,6 +147,7 @@ def generate_annotations(labelss: List[List[str]], save_dir: str, imgs: List = N
     """
     Saves images and annotations in COCO format
     :param bboxess: List of lists containing bounding boxes
+    :param segmentationss: List of lists containing contours
     :param labelss: List of lists containing labels
     :param save_dir: Directory to save images to
     :param imgs: List of PIL images
